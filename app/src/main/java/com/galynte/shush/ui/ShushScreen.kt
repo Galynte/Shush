@@ -176,14 +176,14 @@ private fun Header(onOpenAbout: () -> Unit) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                text = "SHUSH",
+                text = "White Noise",
                 color = TextMuted,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 2.2.sp,
             )
             Text(
-                text = "White Noise",
+                text = "Shush",
                 color = TextPrimary,
                 fontSize = 34.sp,
                 fontWeight = FontWeight.SemiBold,
