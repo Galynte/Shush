@@ -12,12 +12,16 @@ import kotlin.math.abs
 /**
  * Writes synthesized noise to an [AudioTrack]. Volume, color, and the fade
  * are read from [PlaybackStore] on each buffer, so the screen can change them
- * without restarting the stream.
+ * without restarting the stream. If the track stops accepting samples, playback
+ * ends instead of spinning.
  */
-class NoiseEngine(
+class NoiseEngine internal constructor(
     private val store: PlaybackStore,
+    private val trackSource: () -> AudioTrack,
     private val onEnded: () -> Unit,
 ) {
+    constructor(store: PlaybackStore, onEnded: () -> Unit) : this(store, { createTrack() }, onEnded)
+
     @Volatile var ducked: Boolean = false
 
     @Volatile private var stopRequested = false
@@ -53,7 +57,7 @@ class NoiseEngine(
     }
 
     private fun loop() {
-        val track = createTrack()
+        val track = trackSource()
         synchronized(this) { audioTrack = track }
         val generator = NoiseGenerator()
         val buffer = ShortArray(BUFFER_SAMPLES)
@@ -82,7 +86,12 @@ class NoiseEngine(
                 if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
                     track.play()
                 }
-                writeAll(track, buffer)
+                if (!writeAll(track, buffer)) {
+                    // write() <= 0 means the track is dead or invalid. Retrying
+                    // without a delay spins this thread and never ends playback.
+                    notify = !stopRequested
+                    break
+                }
                 if (!session.isPlaying && abs(applied) < 0.001f) {
                     if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                         track.pause()
@@ -97,34 +106,17 @@ class NoiseEngine(
         if (notify) onEnded()
     }
 
-    private fun writeAll(track: AudioTrack, buffer: ShortArray) {
+    private fun writeAll(track: AudioTrack, buffer: ShortArray): Boolean {
         var offset = 0
         while (offset < buffer.size && !stopRequested) {
             val wrote = track.write(buffer, offset, buffer.size - offset)
-            if (wrote <= 0) break
+            if (wrote <= 0) {
+                if (!stopRequested) Log.e(TAG, "AudioTrack.write failed ($wrote)")
+                return false
+            }
             offset += wrote
         }
-    }
-
-    private fun createTrack(): AudioTrack {
-        val min = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-        val bufferSize = (if (min > 0) min else BUFFER_SAMPLES * 2) * 2
-        return AudioTrack.Builder()
-            .setAudioAttributes(mediaAttributes())
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(SAMPLE_RATE)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(bufferSize)
-            .build()
+        return true
     }
 
     private fun releaseTrack() {
@@ -152,6 +144,27 @@ class NoiseEngine(
         const val SAMPLE_RATE = 48_000
         private const val BUFFER_SAMPLES = 2048
         private const val GAIN_STEP = 0.0015f
+
+        private fun createTrack(): AudioTrack {
+            val min = AudioTrack.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            val bufferSize = (if (min > 0) min else BUFFER_SAMPLES * 2) * 2
+            return AudioTrack.Builder()
+                .setAudioAttributes(mediaAttributes())
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(bufferSize)
+                .build()
+        }
 
         fun mediaAttributes(): AudioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
