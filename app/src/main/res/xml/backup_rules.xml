@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Sound, volume, and timer choices can move with the phone. An in-progress session should not. -->
+    <exclude domain="sharedpref" path="shush_session.xml" />
+</full-backup-content>

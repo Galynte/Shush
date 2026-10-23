@@ -1,0 +1,90 @@
+name-template: "Shush $RESOLVED_VERSION"
+tag-template: "$RESOLVED_VERSION"
+
+version-resolver:
+  major:
+    labels:
+      - "major"
+      - "breaking"
+  minor:
+    labels:
+      - "minor"
+      - "feature"
+      - "feat"
+  patch:
+    labels:
+      - "patch"
+      - "fix"
+      - "bugfix"
+      - "bug"
+      - "chore"
+      - "dependencies"
+  default: patch
+
+categories:
+  - title: "New"
+    labels:
+      - "feat"
+      - "feature"
+      - "enhancement"
+  - title: "Fixes"
+    labels:
+      - "fix"
+      - "bug"
+      - "bugfix"
+  - title: "Dependencies"
+    labels:
+      - "dependencies"
+      - "chore(deps)"
+  - title: "Maintenance"
+    labels:
+      - "chore"
+  - title: "Documentation"
+    labels:
+      - "docs"
+
+exclude-labels:
+  - "skip-changelog"
+  - "duplicate"
+  - "invalid"
+
+change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
+change-title-escapes: '\<*_&'
+
+exclude-contributors:
+  - "dependabot"
+
+template: |
+  ## What's changed
+
+  $CHANGES
+
+  ## Install
+
+  Download `Shush-$RESOLVED_VERSION.apk` below and install it on an Android phone, or upload the `.aab` to Play Console.
+
+  ---
+
+  **Full changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...$RESOLVED_VERSION
+
+autolabeler:
+  - label: "feat"
+    branch:
+      - '/^feat(ure)?[/-].+/'
+    title:
+      - '/^feat(\(.+\))?:/i'
+  - label: "fix"
+    branch:
+      - '/^fix[/-].+/'
+    title:
+      - '/^fix(\(.+\))?:/i'
+  - label: "chore"
+    branch:
+      - '/^chore[/-].+/'
+    title:
+      - '/^chore(\(.+\))?:/i'
+  - label: "docs"
+    files:
+      - "*.md"
+    title:
+      - '/^docs(\(.+\))?:/i'

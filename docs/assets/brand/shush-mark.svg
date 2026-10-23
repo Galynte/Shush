@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="Shush">
+  <rect width="108" height="108" rx="24" fill="#1B1733"/>
+  <circle cx="50" cy="54" r="28" fill="#D5C9FF" fill-opacity="0.16"/>
+  <path fill="#E6DEFF" fill-rule="evenodd" d="M45 35 a19 19 0 1 0 0.1 0 z M55 34.5 a15.5 15.5 0 1 1 -0.1 0 z"/>
+  <rect x="66" y="48" width="5" height="12" rx="2.5" fill="#D5C9FF"/>
+  <rect x="73.5" y="43" width="5" height="22" rx="2.5" fill="#D5C9FF"/>
+  <rect x="81" y="47" width="5" height="14" rx="2.5" fill="#D5C9FF"/>
+</svg>

@@ -1,0 +1,299 @@
+// Copyright 2026 Galynte. Licensed under the Apache License, Version 2.0.
+
+@file:Suppress("DEPRECATION") // MediaSessionCompat is the lock-screen session for a raw AudioTrack.
+
+package com.galynte.shush.playback
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.PowerManager
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.media.app.NotificationCompat.MediaStyle
+import com.galynte.shush.MainActivity
+import com.galynte.shush.R
+import com.galynte.shush.ShushApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Plays in the foreground so a locked screen does not stop the noise.
+ * The notification is the only control surface outside the app, and the channel is silent.
+ */
+class NoisePlaybackService : android.app.Service() {
+    private val store by lazy { (application as ShushApp).store }
+    private val engine by lazy {
+        NoiseEngine(store) {
+            mainExecutor.execute { finishFromEngine() }
+        }
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var ticker: Job? = null
+    private lateinit var session: MediaSessionCompat
+    private lateinit var focusRequest: AudioFocusRequest
+    private var resumeAfterTransientLoss = false
+
+    private val wakeLock: PowerManager.WakeLock by lazy {
+        (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "shush:playback")
+            .apply { setReferenceCounted(false) }
+    }
+
+    private val audioManager by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
+
+    override fun onCreate() {
+        super.onCreate()
+        session = MediaSessionCompat(this, "shush").apply {
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() {
+                    store.play()
+                    render()
+                }
+
+                override fun onPause() {
+                    store.pause()
+                    render()
+                }
+
+                override fun onStop() {
+                    store.stop()
+                    render()
+                }
+            })
+        }
+        focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(NoiseEngine.mediaAttributes())
+            .setOnAudioFocusChangeListener { change -> onAudioFocus(change) }
+            .setWillPauseWhenDucked(false)
+            .build()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_PLAY -> store.play()
+            ACTION_PAUSE -> store.pause()
+            ACTION_STOP -> store.stop()
+            null -> store.restoreSession()
+            ACTION_SYNC -> Unit
+        }
+        return render()
+    }
+
+    override fun onBind(intent: Intent?) = null
+
+    override fun onDestroy() {
+        ticker?.cancel()
+        scope.coroutineContext[Job]?.cancel()
+        engine.stop()
+        abandonFocus()
+        releaseWake()
+        if (::session.isInitialized) {
+            session.isActive = false
+            session.release()
+        }
+        super.onDestroy()
+    }
+
+    private fun render(): Int {
+        val state = store.state.value
+        if (!state.isPlaying && !state.isPaused) {
+            engine.stop()
+            abandonFocus()
+            releaseWake()
+            if (::session.isInitialized) session.isActive = false
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val notification = buildNotification(state)
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
+        } catch (security: SecurityException) {
+            Log.e(TAG, "Could not start foreground playback", security)
+            store.stop()
+            engine.stop()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        updateMediaSession(state)
+        session.isActive = true
+        if (state.isPlaying) {
+            requestFocus()
+            acquireWake()
+            engine.ducked = false
+        } else {
+            releaseWake()
+        }
+        engine.start()
+        ensureTicker()
+        return START_STICKY
+    }
+
+    private fun finishFromEngine() {
+        if (!store.state.value.isPlaying) return
+        store.stop()
+        render()
+    }
+
+    private fun onAudioFocus(change: Int) {
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                resumeAfterTransientLoss = false
+                engine.ducked = false
+                if (store.state.value.isPlaying) store.pause()
+                render()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (store.state.value.isPlaying) {
+                    resumeAfterTransientLoss = true
+                    store.pause()
+                    render()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine.ducked = true
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                engine.ducked = false
+                if (resumeAfterTransientLoss) {
+                    resumeAfterTransientLoss = false
+                    store.play()
+                    render()
+                }
+            }
+        }
+    }
+
+    private fun requestFocus() {
+        audioManager.requestAudioFocus(focusRequest)
+    }
+
+    private fun abandonFocus() {
+        resumeAfterTransientLoss = false
+        engine.ducked = false
+        if (::focusRequest.isInitialized) {
+            audioManager.abandonAudioFocusRequest(focusRequest)
+        }
+    }
+
+    private fun acquireWake() {
+        if (!wakeLock.isHeld) wakeLock.acquire(WAKE_TIMEOUT_MS)
+    }
+
+    private fun refreshWake() {
+        if (store.state.value.isPlaying) wakeLock.acquire(WAKE_TIMEOUT_MS)
+    }
+
+    private fun releaseWake() {
+        if (wakeLock.isHeld) wakeLock.release()
+    }
+
+    private fun ensureTicker() {
+        if (ticker?.isActive == true) return
+        ticker = scope.launch {
+            while (isActive) {
+                delay(1_000)
+                val state = store.state.value
+                if (!state.isPlaying && !state.isPaused) continue
+                updateMediaSession(state)
+                getSystemService(android.app.NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, buildNotification(state))
+                refreshWake()
+            }
+        }
+    }
+
+    private fun updateMediaSession(state: ShushState) {
+        val playback = when {
+            state.isPlaying -> PlaybackStateCompat.STATE_PLAYING
+            state.isPaused -> PlaybackStateCompat.STATE_PAUSED
+            else -> PlaybackStateCompat.STATE_STOPPED
+        }
+        session.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setActions(
+                    PlaybackStateCompat.ACTION_PLAY or
+                        PlaybackStateCompat.ACTION_PAUSE or
+                        PlaybackStateCompat.ACTION_STOP,
+                )
+                .setState(playback, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, if (state.isPlaying) 1f else 0f)
+                .build(),
+        )
+        session.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.sound.label)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Shush")
+                .build(),
+        )
+    }
+
+    private fun buildNotification(state: ShushState): Notification {
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val playPauseAction = if (state.isPlaying) {
+            action(1, R.drawable.ic_action_pause, "Pause", ACTION_PAUSE)
+        } else {
+            action(1, R.drawable.ic_action_play, "Play", ACTION_PLAY)
+        }
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_shush)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(PlaybackReducer.statusLine(state, System.currentTimeMillis()))
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .addAction(playPauseAction)
+            .addAction(action(2, R.drawable.ic_action_stop, "Stop", ACTION_STOP))
+            .setStyle(
+                MediaStyle()
+                    .setMediaSession(session.sessionToken)
+                    .setShowActionsInCompactView(0, 1),
+            )
+            .build()
+    }
+
+    private fun action(requestCode: Int, icon: Int, label: String, action: String): NotificationCompat.Action {
+        val pending = PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, NoisePlaybackService::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Action.Builder(icon, label, pending).build()
+    }
+
+    companion object {
+        const val CHANNEL_ID = "playback"
+        const val NOTIFICATION_ID = 7
+        const val ACTION_SYNC = "com.galynte.shush.SYNC"
+        const val ACTION_PLAY = "com.galynte.shush.PLAY"
+        const val ACTION_PAUSE = "com.galynte.shush.PAUSE"
+        const val ACTION_STOP = "com.galynte.shush.STOP"
+        private const val TAG = "Shush"
+        private const val WAKE_TIMEOUT_MS = 10L * 60L * 60L * 1000L
+    }
+}

@@ -1,0 +1,193 @@
+name: Build & Release APK + AAB
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests and debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Android SDK
+        uses: ./.github/actions/android-sdk
+
+      - name: Test and assemble debug
+        run: |
+          chmod +x ./gradlew
+          ./gradlew testDebugUnitTest assembleDebug --stacktrace
+
+  release:
+    name: Signed APK and AAB
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Android SDK
+        uses: ./.github/actions/android-sdk
+
+      - name: Prepare signing
+        id: signing
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SIGNING_KEY}" ]; then
+            echo "${SIGNING_KEY}" | base64 -d > app/upload-keystore.jks
+            echo "mode=upload" >> "${GITHUB_OUTPUT}"
+            echo "Signed with the Play upload key." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            mkdir -p "${HOME}/.android"
+            if [ ! -f "${HOME}/.android/debug.keystore" ]; then
+              keytool -genkeypair -v \
+                -keystore "${HOME}/.android/debug.keystore" \
+                -storepass android -keypass android \
+                -alias androiddebugkey \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            echo "mode=debug" >> "${GITHUB_OUTPUT}"
+            echo "SIGNING_KEY is not set. This build is signed with the CI debug keystore and is not a Play upload." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Require the upload key on tagged releases
+        if: startsWith(github.ref, 'refs/tags/') && steps.signing.outputs.mode != 'upload'
+        run: |
+          echo "Tagged releases need SIGNING_KEY, SIGNING_STORE_PASSWORD, SIGNING_ALIAS, and SIGNING_KEY_PASSWORD."
+          exit 1
+
+      - name: Build release APK and AAB
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          if [ "${{ steps.signing.outputs.mode }}" = "upload" ]; then
+            ./gradlew assembleRelease bundleRelease --stacktrace \
+              -Pandroid.injected.signing.store.file="${PWD}/app/upload-keystore.jks" \
+              -Pandroid.injected.signing.store.password="${KEYSTORE_PASSWORD}" \
+              -Pandroid.injected.signing.key.alias="${KEY_ALIAS}" \
+              -Pandroid.injected.signing.key.password="${KEY_PASSWORD}"
+          else
+            ./gradlew assembleRelease bundleRelease --stacktrace
+          fi
+
+      - name: Rename APK and AAB
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            NAME="Shush-${GITHUB_REF#refs/tags/}"
+          else
+            NAME="Shush-latest"
+          fi
+          mv app/build/outputs/apk/release/app-release.apk "app/build/outputs/apk/release/${NAME}.apk"
+          mv app/build/outputs/bundle/release/app-release.aab "app/build/outputs/bundle/release/${NAME}.aab"
+          echo "APK: ${NAME}.apk" >> "${GITHUB_STEP_SUMMARY}"
+          echo "AAB: ${NAME}.aab" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Create native debug symbols zip
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            SYM_NAME="Shush-${GITHUB_REF#refs/tags/}-native-debug-symbols.zip"
+          else
+            SYM_NAME="Shush-latest-native-debug-symbols.zip"
+          fi
+          SYMBOLS_DIR=$(find app/build/intermediates -type d -path '*merge*NativeLibs*/out/lib' | head -n1 || true)
+          if [[ -z "${SYMBOLS_DIR}" ]]; then
+            SYMBOLS_DIR=$(find app/build/intermediates -type d -path '*merged_native_libs*/out/lib' | head -n1 || true)
+          fi
+          if [[ -z "${SYMBOLS_DIR}" || ! -d "${SYMBOLS_DIR}" ]]; then
+            echo "No native libraries were packaged. Skipping the symbols zip."
+            exit 0
+          fi
+          (cd "${SYMBOLS_DIR}" && zip -r "${OLDPWD}/app/build/outputs/bundle/release/${SYM_NAME}" .)
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shush-apk
+          path: app/build/outputs/apk/release/Shush-*.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shush-aab
+          path: app/build/outputs/bundle/release/Shush-*.aab
+
+      - name: Upload native debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: Shush-native-debug-symbols
+          path: app/build/outputs/bundle/release/*-native-debug-symbols.zip
+          if-no-files-found: ignore
+
+      - name: Create the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          publish: true
+          name: "Shush ${{ github.ref_name }}"
+          tag: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach APK, AAB, and symbols to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          sleep 2
+          APK_FILE=$(find app/build/outputs/apk/release -name 'Shush-*.apk' | head -n1)
+          AAB_FILE=$(find app/build/outputs/bundle/release -name 'Shush-*.aab' | head -n1)
+          SYM_FILE=$(find app/build/outputs/bundle/release -name 'Shush-*-native-debug-symbols.zip' | head -n1 || true)
+          gh release upload "${TAG}" "${APK_FILE}" --clobber
+          gh release upload "${TAG}" "${AAB_FILE}" --clobber
+          if [[ -n "${SYM_FILE}" ]]; then
+            gh release upload "${TAG}" "${SYM_FILE}" --clobber
+          fi
