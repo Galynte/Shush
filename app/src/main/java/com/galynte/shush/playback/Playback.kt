@@ -6,12 +6,12 @@ package com.galynte.shush.playback
 const val FADE_MS = 12_000L
 
 const val MIN_CUSTOM_MINUTES = 1
-const val MAX_CUSTOM_MINUTES = 8 * 60
+const val MAX_CUSTOM_MINUTES = 23 * 60 + 59
 
-enum class NoiseColor(val label: String, val description: String) {
-    WHITE("White", "Steady, full spectrum hush"),
-    PINK("Pink", "Softer, like rain on a roof"),
-    BROWN("Brown", "Deep, like a distant ocean"),
+enum class NoiseColor(val label: String) {
+    WHITE("White"),
+    PINK("Pink"),
+    BROWN("Brown"),
 }
 
 enum class TimerMode {

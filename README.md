@@ -29,7 +29,7 @@ Install a debug build from source, or take the APK from a [GitHub release](https
 * **Three sounds.** White is a steady full-spectrum hush. Pink is softer, like rain on a roof. Brown is deep, like a distant ocean. Switching sounds does not stop playback.
 * **One play button.** Playback continues with the screen off. The notification can pause or stop it, and the channel itself is silent.
 * **Volume.** The slider is the app's own level, so a quiet night setting stays put when you come back.
-* **Sleep timer.** Off, 15 minutes, 30 minutes, 1 hour, or a custom length from 1 minute to 8 hours. Pausing freezes the countdown. The last 12 seconds fade to silence.
+* **Sleep timer.** Off, 15 minutes, 30 minutes, 1 hour, or a custom length from 1 minute to 23 hours 59 minutes. Pausing freezes the countdown. The last 12 seconds fade to silence.
 * **Lock screen.** A media session exposes play, pause, and stop, including from a connected headset.
 
 ## Brand

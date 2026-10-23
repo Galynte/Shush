@@ -53,7 +53,7 @@ Pick one sound and press play.
 • Pink — softer, like rain on a roof
 • Brown — deep, like a distant ocean
 
-Set a sleep timer for 15 minutes, 30 minutes, 1 hour, or any length up to 8 hours. When the timer ends, the sound fades out over 12 seconds instead of stopping short.
+Set a sleep timer for 15 minutes, 30 minutes, 1 hour, or any length up to 23 hours 59 minutes. When the timer ends, the sound fades out over 12 seconds instead of stopping short.
 
 Playback continues with the screen off. The sound is generated on the phone, so Shush works on a plane and does not ask for an account.
 

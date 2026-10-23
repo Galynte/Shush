@@ -54,7 +54,7 @@ class PlaybackReducerTest {
 
     @Test
     fun customMinutesAreClampedAndSelected() {
-        val state = PlaybackReducer.setCustomMinutes(ShushState(), 900, now)
+        val state = PlaybackReducer.setCustomMinutes(ShushState(), 24 * 60, now)
         assertEquals(TimerMode.CUSTOM, state.timerMode)
         assertEquals(MAX_CUSTOM_MINUTES, state.customMinutes)
         val low = PlaybackReducer.setCustomMinutes(ShushState(), 0, now)

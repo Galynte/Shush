@@ -176,7 +176,7 @@ private fun Header(onOpenAbout: () -> Unit) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                text = "GOOD NIGHT",
+                text = "SHUSH",
                 color = TextMuted,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
@@ -273,15 +273,6 @@ private fun SoundCard(
                 color = TextPrimary,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = color.description,
-                color = TextMuted,
-                fontSize = 11.sp,
-                lineHeight = 13.sp,
-                textAlign = TextAlign.Center,
-                minLines = 3,
             )
         }
         if (selected) {

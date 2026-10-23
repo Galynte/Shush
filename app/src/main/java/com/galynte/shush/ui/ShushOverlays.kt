@@ -52,8 +52,8 @@ fun CustomTimerOverlay(
     onSave: (Int) -> Unit,
 ) {
     val start = initialMinutes.coerceIn(0, MAX_CUSTOM_MINUTES)
-    var hours by remember { mutableIntStateOf((start / 60).coerceAtMost(8)) }
-    var minutes by remember { mutableIntStateOf(if (start / 60 >= 8) 0 else start % 60) }
+    var hours by remember { mutableIntStateOf(start / 60) }
+    var minutes by remember { mutableIntStateOf(start % 60) }
     val total = hours * 60 + minutes
     Box(Modifier.fillMaxSize()) {
         Scrim(onDismiss)
@@ -93,46 +93,18 @@ fun CustomTimerOverlay(
                     label = "Hours",
                     value = hours.toString(),
                     minusEnabled = hours > 0,
-                    plusEnabled = hours < 8,
+                    plusEnabled = hours < 23,
                     onMinus = { if (hours > 0) hours -= 1 },
-                    onPlus = {
-                        if (hours < 8) {
-                            hours += 1
-                            if (hours == 8) minutes = 0
-                        }
-                    },
+                    onPlus = { if (hours < 23) hours += 1 },
                 )
                 Stepper(
                     label = "Minutes",
                     value = minutes.toString().padStart(2, '0'),
-                    minusEnabled = minutes > 0 && hours < 8,
-                    plusEnabled = minutes < 55 && hours < 8,
-                    onMinus = { if (minutes >= 5) minutes -= 5 else minutes = 0 },
-                    onPlus = { if (minutes <= 50) minutes += 5 },
+                    minusEnabled = minutes > 0,
+                    plusEnabled = minutes < 59,
+                    onMinus = { if (minutes > 0) minutes -= 1 },
+                    onPlus = { if (minutes < 59) minutes += 1 },
                 )
-            }
-            Spacer(Modifier.height(18.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(45, 90, 120, 180).forEach { preset ->
-                    val selected = total == preset
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (selected) Lavender else Card)
-                            .clickable {
-                                hours = preset / 60
-                                minutes = preset % 60
-                            }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    ) {
-                        Text(
-                            text = formatMinutes(preset),
-                            color = if (selected) Night else TextPrimary,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
             }
             Spacer(Modifier.height(22.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
