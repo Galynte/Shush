@@ -64,7 +64,6 @@ class NoiseEngine internal constructor(
         var applied = 0f
         var notify = false
         try {
-            track.play()
             while (!stopRequested) {
                 val session = store.state.value
                 val now = System.currentTimeMillis()
@@ -72,6 +71,13 @@ class NoiseEngine internal constructor(
                 if (session.isPlaying && end != null && now >= end) {
                     notify = true
                     break
+                }
+                if (!session.isPlaying && abs(applied) < SILENCE) {
+                    // play() after pause() starts and suspends the Bluetooth stream
+                    // on every buffer. Tesla shows that as a rapid pause/play loop
+                    // even though the samples are silent. Stay paused until resume.
+                    holdPaused(track)
+                    continue
                 }
                 val remaining = if (session.isPlaying && end != null) end - now else null
                 val fade = if (session.isPlaying) fadeFactor(remaining) else 0f
@@ -92,18 +98,19 @@ class NoiseEngine internal constructor(
                     notify = !stopRequested
                     break
                 }
-                if (!session.isPlaying && abs(applied) < 0.001f) {
-                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        track.pause()
-                        track.flush()
-                    }
-                    Thread.sleep(40)
-                }
             }
         } finally {
             releaseTrack()
         }
         if (notify) onEnded()
+    }
+
+    private fun holdPaused(track: AudioTrack) {
+        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+            track.pause()
+            track.flush()
+        }
+        Thread.sleep(PAUSED_POLL_MS)
     }
 
     private fun writeAll(track: AudioTrack, buffer: ShortArray): Boolean {
@@ -144,6 +151,8 @@ class NoiseEngine internal constructor(
         const val SAMPLE_RATE = 48_000
         private const val BUFFER_SAMPLES = 2048
         private const val GAIN_STEP = 0.0015f
+        private const val SILENCE = 0.001f
+        private const val PAUSED_POLL_MS = 40L
 
         private fun createTrack(): AudioTrack {
             val min = AudioTrack.getMinBufferSize(
