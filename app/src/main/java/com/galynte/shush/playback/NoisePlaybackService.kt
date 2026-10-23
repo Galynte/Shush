@@ -17,6 +17,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import com.galynte.shush.MainActivity
 import com.galynte.shush.R
@@ -37,7 +38,8 @@ class NoisePlaybackService : android.app.Service() {
     private val store by lazy { (application as ShushApp).store }
     private val engine by lazy {
         NoiseEngine(store) {
-            mainExecutor.execute { finishFromEngine() }
+            // Context.getMainExecutor() is API 28. This runs on the audio thread, and minSdk is 26.
+            ContextCompat.getMainExecutor(this).execute { finishFromEngine() }
         }
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
