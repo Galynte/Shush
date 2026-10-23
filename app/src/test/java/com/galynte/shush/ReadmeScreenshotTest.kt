@@ -83,7 +83,7 @@ class ReadmeScreenshotTest {
                     waveformPhase = phase,
                     showCustomTimer = showCustomTimer,
                     showAbout = showAbout,
-                    versionName = "1.0.0",
+                    versionName = "0.0.1",
                     onSelectSound = {},
                     onVolume = {},
                     onPlayPause = {},

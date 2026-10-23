@@ -12,7 +12,7 @@ The workflow in `.github/workflows/build-and-release.yml` follows the TapOut pip
 - Pushes to `main` also build a release APK and AAB and upload them as workflow artifacts.
 - A tag named `1.2.3` (three numbers, no `v`) sets `versionName` and `versionCode`, creates a GitHub Release, and attaches `Shush-1.2.3.apk` and `Shush-1.2.3.aab`.
 
-`versionCode` is `major * 10000 + minor * 100 + patch`, so `1.0.0` is `10000` and `1.2.3` is `10203`. Play requires this number to increase on every upload.
+`versionCode` is `major * 10000 + minor * 100 + patch`, so `0.0.1` is `1`, `1.0.0` is `10000`, and `1.2.3` is `10203`. Play requires this number to increase on every upload. The first release is `0.0.1`.
 
 ### Signing secrets
 

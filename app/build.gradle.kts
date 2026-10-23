@@ -11,8 +11,8 @@ android {
         applicationId = "com.galynte.shush"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10000
-        versionName = "1.0.0"
+        versionCode = 1
+        versionName = "0.0.1"
 
         // Tagged releases (1.2.3, no "v" prefix) override the version the same way TapOut does.
         if (System.getenv("GITHUB_REF")?.startsWith("refs/tags/") == true) {
