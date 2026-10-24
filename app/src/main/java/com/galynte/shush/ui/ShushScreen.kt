@@ -3,6 +3,7 @@
 package com.galynte.shush.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,7 +53,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
@@ -68,6 +71,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import com.galynte.shush.R
 import com.galynte.shush.playback.NoiseColor
 import com.galynte.shush.playback.ShushUiState
 import com.galynte.shush.playback.TimerMode
@@ -168,11 +174,7 @@ fun ShushScreen(
 @Composable
 private fun Header(onOpenAbout: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        ShushMark(
-            modifier = Modifier
-                .size(40.dp)
-                .semantics { contentDescription = "Shush" },
-        )
+        HeaderIcon()
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -210,6 +212,22 @@ private fun Header(onOpenAbout: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun HeaderIcon() {
+    val context = LocalContext.current
+    val image = remember {
+        val drawable = requireNotNull(ContextCompat.getDrawable(context, R.mipmap.ic_launcher))
+        drawable.toBitmap(width = 192, height = 192).asImageBitmap()
+    }
+    Image(
+        bitmap = image,
+        contentDescription = "Shush",
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(8.dp)),
+    )
 }
 
 @Composable
