@@ -85,9 +85,26 @@ class PlaybackReducerTest {
         )
         val ui = PlaybackReducer.toUi(playing, now)
         assertTrue(ui.isFading)
-        assertEquals("Brown · Fading out", PlaybackReducer.statusLine(playing, now))
+        assertEquals("Brown Noise · Fading out", PlaybackReducer.statusLine(playing, now))
         val paused = PlaybackReducer.pause(playing, now)
         assertFalse(PlaybackReducer.toUi(paused, now).isFading)
+    }
+
+    @Test
+    fun statusLineNamesEachNoise() {
+        assertEquals(
+            "White Noise",
+            PlaybackReducer.statusLine(ShushState(sound = NoiseColor.WHITE, isPlaying = true), now),
+        )
+        assertEquals(
+            "Pink Noise",
+            PlaybackReducer.statusLine(ShushState(sound = NoiseColor.PINK, isPlaying = true), now),
+        )
+        val timed = PlaybackReducer.play(
+            ShushState(sound = NoiseColor.BROWN, timerMode = TimerMode.MIN_15),
+            now,
+        )
+        assertEquals("Brown Noise · 15:00 left", PlaybackReducer.statusLine(timed, now))
     }
 
     @Test
