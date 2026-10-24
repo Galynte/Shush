@@ -14,6 +14,9 @@ enum class NoiseColor(val label: String) {
     BROWN("Brown"),
 }
 
+/** Shade and media-session title. The sound cards keep the short [NoiseColor.label]. */
+fun noiseTitle(sound: NoiseColor): String = "${sound.label} Noise"
+
 enum class TimerMode {
     OFF,
     MIN_15,
@@ -168,7 +171,7 @@ object PlaybackReducer {
 
     fun statusLine(state: ShushState, nowEpochMs: Long): String {
         val ui = toUi(state, nowEpochMs)
-        val name = state.sound.label
+        val name = noiseTitle(state.sound)
         return when {
             ui.isFading -> "$name · Fading out"
             state.isPlaying && ui.remainingMs != null -> "$name · ${formatRemaining(ui.remainingMs)} left"

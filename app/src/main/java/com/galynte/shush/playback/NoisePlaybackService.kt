@@ -8,6 +8,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.PowerManager
@@ -18,6 +19,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import androidx.media.app.NotificationCompat.MediaStyle
 import com.galynte.shush.MainActivity
 import com.galynte.shush.R
@@ -55,6 +57,13 @@ class NoisePlaybackService : android.app.Service() {
     }
 
     private val audioManager by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
+
+    private val brandArt: Bitmap by lazy {
+        val drawable = requireNotNull(ContextCompat.getDrawable(this, R.mipmap.ic_launcher))
+        val size = resources.getDimensionPixelSize(android.R.dimen.notification_large_icon_width)
+            .coerceAtLeast(1)
+        drawable.toBitmap(width = size, height = size)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -239,8 +248,10 @@ class NoisePlaybackService : android.app.Service() {
         )
         session.setMetadata(
             MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.sound.label)
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, noiseTitle(state.sound))
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Shush")
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, brandArt)
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_ART, brandArt)
                 .build(),
         )
     }
@@ -259,6 +270,7 @@ class NoisePlaybackService : android.app.Service() {
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_shush)
+            .setLargeIcon(brandArt)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(PlaybackReducer.statusLine(state, System.currentTimeMillis()))
             .setContentIntent(open)
