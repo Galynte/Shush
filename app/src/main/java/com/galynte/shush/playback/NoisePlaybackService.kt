@@ -4,6 +4,7 @@
 
 package com.galynte.shush.playback
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -12,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.PowerManager
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -136,6 +138,11 @@ class NoisePlaybackService : android.app.Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Stay foreground through a transient focus loss. Dropping it makes the
+        // later AUDIOFOCUS_GAIN promote the service from the background, and
+        // Android 12+ throws ForegroundServiceStartNotAllowedException.
+        val stayForeground = shouldHoldForeground(state)
+        val card = buildNotification(state, ongoing = true)
         try {
             // startForegroundService has to reach startForeground even when the
             // sound is only paused. The foreground card must stay ongoing for that
@@ -143,7 +150,7 @@ class NoisePlaybackService : android.app.Service() {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
-                buildNotification(state, ongoing = true),
+                card,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
             )
         } catch (security: SecurityException) {
@@ -152,11 +159,34 @@ class NoisePlaybackService : android.app.Service() {
             clearShade()
             stopSelf()
             return START_NOT_STICKY
+        } catch (blocked: IllegalStateException) {
+            if (!isForegroundStartNotAllowed(blocked)) throw blocked
+            // The process is still alive. Keep the sound going so a short
+            // interruption resumes instead of crashing the service.
+            Log.w(TAG, "Could not start foreground playback from the background", blocked)
+            notifications.notify(
+                NOTIFICATION_ID,
+                buildNotification(state, ongoing = stayForeground),
+            )
+            return trackPlayback(state)
         }
-        if (!state.isPlaying) {
+        if (!stayForeground) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
             notifications.notify(NOTIFICATION_ID, buildNotification(state, ongoing = false))
         }
+        return trackPlayback(state)
+    }
+
+    private fun shouldHoldForeground(state: ShushState): Boolean =
+        state.isPlaying || resumeAfterTransientLoss
+
+    // ForegroundServiceStartNotAllowedException extends IllegalStateException, not
+    // SecurityException, and the class does not exist before Android 12.
+    private fun isForegroundStartNotAllowed(error: IllegalStateException): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            error is ForegroundServiceStartNotAllowedException
+
+    private fun trackPlayback(state: ShushState): Int {
         updateMediaSession(state)
         session.isActive = true
         if (state.isPlaying) {
@@ -210,6 +240,7 @@ class NoisePlaybackService : android.app.Service() {
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 if (store.state.value.isPlaying) {
+                    // render() keeps the foreground service while this flag is set.
                     resumeAfterTransientLoss = true
                     store.pause()
                     render()
@@ -262,9 +293,13 @@ class NoisePlaybackService : android.app.Service() {
                 if (!state.isPlaying && !state.isPaused) continue
                 updateMediaSession(state)
                 // A second notify() after stopForeground(REMOVE) is what leaves an
-                // ongoing card that the shade will not swipe away.
+                // ongoing card that the shade will not swipe away. A transient
+                // focus loss stays foreground, so that card has to stay ongoing.
                 if (!postingShade) continue
-                notifications.notify(NOTIFICATION_ID, buildNotification(state))
+                notifications.notify(
+                    NOTIFICATION_ID,
+                    buildNotification(state, ongoing = shouldHoldForeground(state)),
+                )
                 refreshWake()
             }
         }
