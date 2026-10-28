@@ -13,6 +13,7 @@ import android.os.Looper
 import android.service.notification.StatusBarNotification
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.test.core.app.ApplicationProvider
 import com.galynte.shush.ShushApp
@@ -21,6 +22,7 @@ import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -90,7 +92,7 @@ class NoisePlaybackServiceTest {
     }
 
     @Test
-    fun stoppedPlaybackClearsTheNotification() {
+    fun stoppedPlaybackKeepsAHideableMediaControl() {
         val app = ApplicationProvider.getApplicationContext<ShushApp>()
         val service = start(app, NoisePlaybackService.ACTION_PLAY)
         try {
@@ -98,12 +100,83 @@ class NoisePlaybackServiceTest {
             assertTrue(posted(service).flags and Notification.FLAG_ONGOING_EVENT != 0)
 
             deliver(service, NoisePlaybackService.ACTION_STOP)
-            shadowOf(Looper.getMainLooper()).idle()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
 
-            assertTrue(shadowOf(service).isForegroundStopped)
-            assertNull(postedOrNull(service))
+            assertFalse(shadowOf(service).isStoppedBySelf)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            val stopped = posted(service)
+            assertEquals("Stopped", stopped.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+            assertEquals(0, stopped.flags and Notification.FLAG_ONGOING_EVENT)
+            assertEquals(0, stopped.flags and Notification.FLAG_FOREGROUND_SERVICE)
+            assertNotNull(stopped.deleteIntent)
+            val session = session(service)
+            assertTrue(session.isActive)
+            assertEquals(PlaybackStateCompat.STATE_STOPPED, playbackState(session))
             assertFalse(app.store.state.value.isPlaying)
             assertFalse(app.store.state.value.isPaused)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun hidingTheStoppedControlRemovesIt() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_STOP)
+            assertNotNull(postedOrNull(service))
+            val stopFromShade = sessionCallback(session(service))
+
+            deliver(service, NoisePlaybackService.ACTION_DISMISS)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertNull(postedOrNull(service))
+            assertTrue(shadowOf(service).isStoppedBySelf)
+
+            // Hide also calls transport stop. That must not put the card back.
+            stopFromShade.onStop()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+            assertNull(postedOrNull(service))
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun stopOnTheStoppedControlHidesIt() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_STOP)
+            assertNotNull(postedOrNull(service))
+
+            deliver(service, NoisePlaybackService.ACTION_STOP)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertNull(postedOrNull(service))
+            assertTrue(shadowOf(service).isStoppedBySelf)
+            assertFalse(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun sessionStopWhilePlayingLeavesTheControlHideable() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            sessionCallback(session(service)).onStop()
+            shadowOf(Looper.getMainLooper()).idle()
+
+            val stopped = posted(service)
+            assertEquals(0, stopped.flags and Notification.FLAG_ONGOING_EVENT)
+            assertNotNull(stopped.deleteIntent)
+            assertEquals(PlaybackStateCompat.STATE_STOPPED, playbackState(session(service)))
+            assertTrue(session(service).isActive)
+            assertFalse(shadowOf(service).isStoppedBySelf)
         } finally {
             shutdown(service, app)
         }
@@ -138,6 +211,78 @@ class NoisePlaybackServiceTest {
             assertTrue(shadowOf(resumed).isLastForegroundNotificationAttached)
         } finally {
             shutdown(resumed, app)
+        }
+    }
+
+    @Test
+    fun pauseAfterTheCardIsPostedStillCallsStartForeground() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+
+            // The pause arrives through startForegroundService after the playing
+            // card already exists. The promotion has to happen again, and the
+            // card that stays in the shade is still the dismissible one.
+            val promoted = shadowOf(service).lastForegroundNotification
+            assertTrue(
+                promoted.extras.getCharSequence(Notification.EXTRA_TEXT)
+                    .toString()
+                    .startsWith("Paused"),
+            )
+            assertTrue(promoted.flags and Notification.FLAG_ONGOING_EVENT != 0)
+            val shown = posted(service)
+            assertEquals(0, shown.flags and Notification.FLAG_ONGOING_EVENT)
+            assertEquals(0, shown.flags and Notification.FLAG_FOREGROUND_SERVICE)
+            assertNotNull(shown.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(shadowOf(service).isStoppedBySelf)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun pausedUpdateAfterTheCardIsPostedStillCallsStartForeground() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            val paused = shadowOf(service).lastForegroundNotification
+            assertEquals(
+                "Paused",
+                paused.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+
+            // Same path as changing the timer while paused: the activity calls
+            // startForegroundService, and the service is no longer foreground.
+            app.store.selectTimer(TimerMode.MIN_15)
+            deliver(service, NoisePlaybackService.ACTION_SYNC)
+
+            val promoted = shadowOf(service).lastForegroundNotification
+            assertNotSame(paused, promoted)
+            assertEquals(
+                "Paused · 15:00 left",
+                promoted.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+            assertTrue(promoted.flags and Notification.FLAG_ONGOING_EVENT != 0)
+            val shown = posted(service)
+            assertEquals(
+                "Paused · 15:00 left",
+                shown.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+            assertEquals(0, shown.flags and Notification.FLAG_ONGOING_EVENT)
+            assertEquals(0, shown.flags and Notification.FLAG_FOREGROUND_SERVICE)
+            assertNotNull(shown.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
         }
     }
 
@@ -394,14 +539,40 @@ class NoisePlaybackServiceTest {
 
     // Robolectric does not publish this session's metadata through MediaController.
     private fun sessionMetadata(service: NoisePlaybackService): MediaMetadataCompat {
-        val sessionField = NoisePlaybackService::class.java.getDeclaredField("session")
-        sessionField.isAccessible = true
-        val session = sessionField.get(service) as MediaSessionCompat
-        val implField = MediaSessionCompat::class.java.getDeclaredField("mImpl")
-        implField.isAccessible = true
-        val impl = implField.get(session)
+        val impl = sessionImpl(session(service))
         val metadataField = declaredField(impl.javaClass, "mMetadata")
         return metadataField.get(impl) as MediaMetadataCompat
+    }
+
+    private fun session(service: NoisePlaybackService): MediaSessionCompat {
+        val sessionField = NoisePlaybackService::class.java.getDeclaredField("session")
+        sessionField.isAccessible = true
+        return sessionField.get(service) as MediaSessionCompat
+    }
+
+    private fun sessionImpl(session: MediaSessionCompat): Any {
+        val implField = MediaSessionCompat::class.java.getDeclaredField("mImpl")
+        implField.isAccessible = true
+        return requireNotNull(implField.get(session))
+    }
+
+    private fun sessionCallback(session: MediaSessionCompat): MediaSessionCompat.Callback {
+        val impl = sessionImpl(session)
+        return declaredField(impl.javaClass, "mCallback").get(impl) as MediaSessionCompat.Callback
+    }
+
+    private fun playbackState(session: MediaSessionCompat): Int {
+        var type: Class<*>? = sessionImpl(session).javaClass
+        val impl = sessionImpl(session)
+        while (type != null) {
+            for (field in type.declaredFields) {
+                field.isAccessible = true
+                val value = field.get(impl)
+                if (value is PlaybackStateCompat) return value.state
+            }
+            type = type.superclass
+        }
+        throw NoSuchFieldException("PlaybackStateCompat on ${impl.javaClass.name}")
     }
 
     private fun declaredField(start: Class<*>, name: String): java.lang.reflect.Field {

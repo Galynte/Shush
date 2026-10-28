@@ -50,6 +50,8 @@ class NoisePlaybackService : android.app.Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var ticker: Job? = null
     private var postingShade = false
+    private var mediaShown = false
+    private var shadeDismissed = false
     private lateinit var session: MediaSessionCompat
     private lateinit var focusRequest: AudioFocusRequest
     private var resumeAfterTransientLoss = false
@@ -74,6 +76,7 @@ class NoisePlaybackService : android.app.Service() {
         session = MediaSessionCompat(this, "shush").apply {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
+                    shadeDismissed = false
                     store.play()
                     render()
                 }
@@ -84,7 +87,13 @@ class NoisePlaybackService : android.app.Service() {
                 }
 
                 override fun onStop() {
+                    // Hide sends stop after the card is already quiet. A stop while
+                    // sound is still playing or paused leaves the control up so the
+                    // shade can offer Hide.
+                    if (shadeDismissed) return
+                    val wasQuiet = !store.state.value.isPlaying && !store.state.value.isPaused
                     store.stop()
+                    if (wasQuiet) shadeDismissed = true
                     render()
                 }
             })
@@ -98,13 +107,23 @@ class NoisePlaybackService : android.app.Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PLAY -> store.play()
+            ACTION_PLAY -> {
+                shadeDismissed = false
+                store.play()
+            }
             ACTION_PAUSE -> store.pause()
-            ACTION_STOP -> store.stop()
+            ACTION_STOP -> {
+                // Stop on the already-stopped card is the same as hiding it.
+                if (!store.state.value.isPlaying && !store.state.value.isPaused) {
+                    shadeDismissed = true
+                }
+                store.stop()
+            }
             ACTION_DISMISS -> {
-                // A swipe while nothing is playing clears the shade card.
+                // A swipe or Hide while nothing is playing clears the shade card.
                 // A paused timer stays in the store and the card returns on play.
                 if (!store.state.value.isPlaying) {
+                    shadeDismissed = true
                     clearShade()
                     stopSelf()
                     return START_NOT_STICKY
@@ -113,7 +132,9 @@ class NoisePlaybackService : android.app.Service() {
             null -> store.restoreSession()
             ACTION_SYNC -> Unit
         }
-        return render()
+        // The activity starts this service in the foreground for play, pause, and
+        // every later update while paused. That start has to reach startForeground.
+        return render(fromStart = true)
     }
 
     override fun onBind(intent: Intent?) = null
@@ -128,31 +149,52 @@ class NoisePlaybackService : android.app.Service() {
             session.isActive = false
             session.release()
         }
+        // The session is gone, so a leftover card can no longer be hidden.
+        notifications.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 
-    private fun render(): Int {
-        val state = store.state.value
-        if (!state.isPlaying && !state.isPaused) {
+    private fun render(fromStart: Boolean = false): Int {
+        if (shadeDismissed) {
             clearShade()
             stopSelf()
+            return START_NOT_STICKY
+        }
+        val state = store.state.value
+        if (!state.isPlaying && !state.isPaused) {
+            // No card was ever posted. Nothing for the shade to hide.
+            if (!mediaShown) {
+                clearShade()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            // SystemUI offers "Hide this media control" only for a media
+            // notification that is still posted and is not ongoing. Removing the
+            // ongoing foreground card leaves the player marked not clearable.
+            showDismissibleStoppedCard(state)
             return START_NOT_STICKY
         }
         // Stay foreground through a transient focus loss. Dropping it makes the
         // later AUDIOFOCUS_GAIN promote the service from the background, and
         // Android 12+ throws ForegroundServiceStartNotAllowedException.
         val stayForeground = shouldHoldForeground(state)
-        val card = buildNotification(state, ongoing = true)
         try {
             // startForegroundService has to reach startForeground even when the
-            // sound is only paused. The foreground card must stay ongoing for that
-            // call; detach and replace it so a stopped card can be swiped.
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                card,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-            )
+            // sound is only paused. A card that is already posted is not that
+            // call: pause has left the foreground, so the next paused start
+            // times out unless this one promotes again. The ongoing card lasts
+            // only for that call; the dismissible card replaces it afterward.
+            // An in-process update, such as a focus loss, is not one of those
+            // starts and must not promote on its own.
+            if (stayForeground || fromStart || !mediaShown) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    buildNotification(state, ongoing = true),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+                )
+                mediaShown = true
+            }
         } catch (security: SecurityException) {
             Log.e(TAG, "Could not start foreground playback", security)
             store.stop()
@@ -168,13 +210,29 @@ class NoisePlaybackService : android.app.Service() {
                 NOTIFICATION_ID,
                 buildNotification(state, ongoing = stayForeground),
             )
+            mediaShown = true
             return trackPlayback(state)
         }
-        if (!stayForeground) {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
-            notifications.notify(NOTIFICATION_ID, buildNotification(state, ongoing = false))
-        }
+        if (!stayForeground) postDismissible(state)
         return trackPlayback(state)
+    }
+
+    /**
+     * Post the clearable card before leaving the foreground. The other order
+     * drops the update and the shade keeps the ongoing player, which hides
+     * "Hide this media control".
+     */
+    private fun postDismissible(state: ShushState) {
+        notifications.notify(NOTIFICATION_ID, buildNotification(state, ongoing = false))
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
+        mediaShown = true
+    }
+
+    private fun showDismissibleStoppedCard(state: ShushState) {
+        releasePlayback()
+        updateMediaSession(state)
+        session.isActive = true
+        postDismissible(state)
     }
 
     private fun shouldHoldForeground(state: ShushState): Boolean =
@@ -201,13 +259,18 @@ class NoisePlaybackService : android.app.Service() {
         return START_STICKY
     }
 
-    private fun clearShade() {
+    private fun releasePlayback() {
         postingShade = false
         ticker?.cancel()
         ticker = null
         engine.stop()
         abandonFocus()
         releaseWake()
+    }
+
+    private fun clearShade() {
+        mediaShown = false
+        releasePlayback()
         if (::session.isInitialized) {
             session.setPlaybackState(
                 PlaybackStateCompat.Builder()
@@ -361,7 +424,6 @@ class NoisePlaybackService : android.app.Service() {
             .setSilent(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(playPauseAction)
             .addAction(action(2, R.drawable.ic_action_stop, "Stop", ACTION_STOP))
             .setStyle(
@@ -369,8 +431,19 @@ class NoisePlaybackService : android.app.Service() {
                     .setMediaSession(session.sessionToken)
                     .setShowActionsInCompactView(0, 1),
             )
-        if (!ongoing) builder.setDeleteIntent(dismissIntent())
-        return builder.build()
+        if (ongoing) {
+            builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        } else {
+            builder.setDeleteIntent(dismissIntent())
+        }
+        val notification = builder.build()
+        if (!ongoing) {
+            // A foreground promotion can leave these set on the builder's result.
+            // The shade treats either one as "this session cannot be hidden".
+            notification.flags = notification.flags and
+                (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE).inv()
+        }
+        return notification
     }
 
     private fun dismissIntent(): PendingIntent = PendingIntent.getService(
