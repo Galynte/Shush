@@ -290,12 +290,16 @@ class NoisePlaybackService : android.app.Service() {
                 delay(1_000)
                 if (!postingShade) continue
                 val state = store.state.value
-                if (!state.isPlaying && !state.isPaused) continue
+                // Paused remaining time is stored, not counted, so that status line
+                // does not change. notify() while the card is being swiped resets the
+                // shade item, and a post after the system removes the card but before
+                // ACTION_DISMISS clears postingShade puts the notification back.
+                if (!state.isPlaying) continue
                 updateMediaSession(state)
                 // A second notify() after stopForeground(REMOVE) is what leaves an
                 // ongoing card that the shade will not swipe away. A transient
                 // focus loss stays foreground, so that card has to stay ongoing.
-                if (!postingShade) continue
+                if (!postingShade || !store.state.value.isPlaying) continue
                 notifications.notify(
                     NOTIFICATION_ID,
                     buildNotification(state, ongoing = shouldHoldForeground(state)),
