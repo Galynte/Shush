@@ -5,6 +5,7 @@
 package com.galynte.shush.playback
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.content.Intent
 import android.os.Looper
 import android.support.v4.media.MediaMetadataCompat
@@ -15,6 +16,7 @@ import com.galynte.shush.ShushApp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -77,6 +79,84 @@ class NoisePlaybackServiceTest {
             service.onDestroy()
             app.store.stop()
         }
+    }
+
+    @Test
+    fun stoppedPlaybackClearsTheNotification() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(posted(service).flags and Notification.FLAG_ONGOING_EVENT != 0)
+
+            deliver(service, NoisePlaybackService.ACTION_STOP)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(shadowOf(service).isForegroundStopped)
+            assertNull(postedOrNull(service))
+            assertFalse(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun pausedNotificationCanBeSwipedAndReturnsOnPlay() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            val paused = posted(service)
+            assertEquals(0, paused.flags and Notification.FLAG_ONGOING_EVENT)
+            assertNotNull(paused.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+
+            // The shade sends the delete intent when the card is swiped.
+            deliver(service, NoisePlaybackService.ACTION_DISMISS)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertNull(postedOrNull(service))
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+
+        val resumed = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(posted(resumed).flags and Notification.FLAG_ONGOING_EVENT != 0)
+            assertTrue(app.store.state.value.isPlaying)
+            assertTrue(shadowOf(resumed).isLastForegroundNotificationAttached)
+        } finally {
+            shutdown(resumed, app)
+        }
+    }
+
+    private fun start(app: ShushApp, action: String): NoisePlaybackService {
+        val intent = Intent(app, NoisePlaybackService::class.java).setAction(action)
+        return Robolectric.buildService(NoisePlaybackService::class.java, intent)
+            .create()
+            .startCommand(0, 1)
+            .get()
+    }
+
+    private fun deliver(service: NoisePlaybackService, action: String) {
+        service.onStartCommand(Intent(service, NoisePlaybackService::class.java).setAction(action), 0, 2)
+    }
+
+    private fun posted(service: NoisePlaybackService): Notification =
+        requireNotNull(postedOrNull(service))
+
+    private fun postedOrNull(service: NoisePlaybackService): Notification? =
+        service.getSystemService(NotificationManager::class.java)
+            .activeNotifications
+            .firstOrNull { it.id == NoisePlaybackService.NOTIFICATION_ID }
+            ?.notification
+
+    private fun shutdown(service: NoisePlaybackService, app: ShushApp) {
+        if (!shadowOf(service).isStoppedBySelf) service.onDestroy()
+        app.store.stop()
     }
 
     private fun engineEnded(service: NoisePlaybackService): () -> Unit {

@@ -5,6 +5,7 @@
 package com.galynte.shush.playback
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -46,6 +47,7 @@ class NoisePlaybackService : android.app.Service() {
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var ticker: Job? = null
+    private var postingShade = false
     private lateinit var session: MediaSessionCompat
     private lateinit var focusRequest: AudioFocusRequest
     private var resumeAfterTransientLoss = false
@@ -97,6 +99,15 @@ class NoisePlaybackService : android.app.Service() {
             ACTION_PLAY -> store.play()
             ACTION_PAUSE -> store.pause()
             ACTION_STOP -> store.stop()
+            ACTION_DISMISS -> {
+                // A swipe while nothing is playing clears the shade card.
+                // A paused timer stays in the store and the card returns on play.
+                if (!store.state.value.isPlaying) {
+                    clearShade()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+            }
             null -> store.restoreSession()
             ACTION_SYNC -> Unit
         }
@@ -121,28 +132,30 @@ class NoisePlaybackService : android.app.Service() {
     private fun render(): Int {
         val state = store.state.value
         if (!state.isPlaying && !state.isPaused) {
-            engine.stop()
-            abandonFocus()
-            releaseWake()
-            if (::session.isInitialized) session.isActive = false
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            clearShade()
             stopSelf()
             return START_NOT_STICKY
         }
-        val notification = buildNotification(state)
         try {
+            // startForegroundService has to reach startForeground even when the
+            // sound is only paused. The foreground card must stay ongoing for that
+            // call; detach and replace it so a stopped card can be swiped.
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
-                notification,
+                buildNotification(state, ongoing = true),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
             )
         } catch (security: SecurityException) {
             Log.e(TAG, "Could not start foreground playback", security)
             store.stop()
-            engine.stop()
+            clearShade()
             stopSelf()
             return START_NOT_STICKY
+        }
+        if (!state.isPlaying) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
+            notifications.notify(NOTIFICATION_ID, buildNotification(state, ongoing = false))
         }
         updateMediaSession(state)
         session.isActive = true
@@ -156,6 +169,29 @@ class NoisePlaybackService : android.app.Service() {
         engine.start()
         ensureTicker()
         return START_STICKY
+    }
+
+    private fun clearShade() {
+        postingShade = false
+        ticker?.cancel()
+        ticker = null
+        engine.stop()
+        abandonFocus()
+        releaseWake()
+        if (::session.isInitialized) {
+            session.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setState(
+                        PlaybackStateCompat.STATE_STOPPED,
+                        PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
+                        0f,
+                    )
+                    .build(),
+            )
+            session.isActive = false
+        }
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        notifications.cancel(NOTIFICATION_ID)
     }
 
     private fun finishFromEngine() {
@@ -216,19 +252,26 @@ class NoisePlaybackService : android.app.Service() {
     }
 
     private fun ensureTicker() {
+        postingShade = true
         if (ticker?.isActive == true) return
         ticker = scope.launch {
             while (isActive) {
                 delay(1_000)
+                if (!postingShade) continue
                 val state = store.state.value
                 if (!state.isPlaying && !state.isPaused) continue
                 updateMediaSession(state)
-                getSystemService(android.app.NotificationManager::class.java)
-                    .notify(NOTIFICATION_ID, buildNotification(state))
+                // A second notify() after stopForeground(REMOVE) is what leaves an
+                // ongoing card that the shade will not swipe away.
+                if (!postingShade) continue
+                notifications.notify(NOTIFICATION_ID, buildNotification(state))
                 refreshWake()
             }
         }
     }
+
+    private val notifications: NotificationManager
+        get() = getSystemService(NotificationManager::class.java)
 
     private fun updateMediaSession(state: ShushState) {
         val playback = when {
@@ -256,7 +299,7 @@ class NoisePlaybackService : android.app.Service() {
         )
     }
 
-    private fun buildNotification(state: ShushState): Notification {
+    private fun buildNotification(state: ShushState, ongoing: Boolean = state.isPlaying): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -268,13 +311,13 @@ class NoisePlaybackService : android.app.Service() {
         } else {
             action(1, R.drawable.ic_action_play, "Play", ACTION_PLAY)
         }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_shush)
             .setLargeIcon(brandArt)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(PlaybackReducer.statusLine(state, System.currentTimeMillis()))
             .setContentIntent(open)
-            .setOngoing(true)
+            .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -287,8 +330,16 @@ class NoisePlaybackService : android.app.Service() {
                     .setMediaSession(session.sessionToken)
                     .setShowActionsInCompactView(0, 1),
             )
-            .build()
+        if (!ongoing) builder.setDeleteIntent(dismissIntent())
+        return builder.build()
     }
+
+    private fun dismissIntent(): PendingIntent = PendingIntent.getService(
+        this,
+        3,
+        Intent(this, NoisePlaybackService::class.java).setAction(ACTION_DISMISS),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
 
     private fun action(requestCode: Int, icon: Int, label: String, action: String): NotificationCompat.Action {
         val pending = PendingIntent.getService(
@@ -307,6 +358,7 @@ class NoisePlaybackService : android.app.Service() {
         const val ACTION_PLAY = "com.galynte.shush.PLAY"
         const val ACTION_PAUSE = "com.galynte.shush.PAUSE"
         const val ACTION_STOP = "com.galynte.shush.STOP"
+        const val ACTION_DISMISS = "com.galynte.shush.DISMISS"
         private const val TAG = "Shush"
         private const val WAKE_TIMEOUT_MS = 10L * 60L * 60L * 1000L
     }
