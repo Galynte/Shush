@@ -2,5 +2,5 @@
 <resources>
     <string name="app_name">Shush</string>
     <string name="notification_channel_name">Playback</string>
-    <string name="notification_channel_description">Shows while Shush is playing or paused. The channel stays quiet.</string>
+    <string name="notification_channel_description">Shows while Shush is playing or paused, and after it stops until the media control is hidden. The channel stays quiet.</string>
 </resources>
