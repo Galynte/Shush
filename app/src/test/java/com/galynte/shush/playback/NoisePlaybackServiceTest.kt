@@ -4,18 +4,26 @@
 
 package com.galynte.shush.playback
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
+import android.app.NotificationManager
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Looper
+import android.service.notification.StatusBarNotification
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.test.core.app.ApplicationProvider
 import com.galynte.shush.ShushApp
+import java.lang.reflect.InvocationTargetException
+import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -57,8 +65,11 @@ class NoisePlaybackServiceTest {
             .setAction(NoisePlaybackService.ACTION_PLAY)
         val service = Robolectric.buildService(NoisePlaybackService::class.java, intent)
             .create()
-            .startCommand(0, 1)
             .get()
+        // onStartCommand directly, not ServiceController.startCommand. The controller
+        // idles the main looper, and the audio thread can post "playback ended" before
+        // that idle runs, which clears the notification this test just created.
+        service.onStartCommand(intent, 0, 1)
         try {
             val notification = shadowOf(service).lastForegroundNotification
             assertEquals("Shush", notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
@@ -74,9 +85,301 @@ class NoisePlaybackServiceTest {
             assertNotNull(art)
             assertTrue(art!!.hasVisiblePixel())
         } finally {
-            service.onDestroy()
-            app.store.stop()
+            shutdown(service, app)
         }
+    }
+
+    @Test
+    fun stoppedPlaybackClearsTheNotification() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(posted(service).flags and Notification.FLAG_ONGOING_EVENT != 0)
+
+            deliver(service, NoisePlaybackService.ACTION_STOP)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(shadowOf(service).isForegroundStopped)
+            assertNull(postedOrNull(service))
+            assertFalse(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun pausedNotificationCanBeSwipedAndReturnsOnPlay() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            val paused = posted(service)
+            assertEquals(0, paused.flags and Notification.FLAG_ONGOING_EVENT)
+            assertNotNull(paused.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+
+            // The shade sends the delete intent when the card is swiped.
+            deliver(service, NoisePlaybackService.ACTION_DISMISS)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertNull(postedOrNull(service))
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+
+        val resumed = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(posted(resumed).flags and Notification.FLAG_ONGOING_EVENT != 0)
+            assertTrue(app.store.state.value.isPlaying)
+            assertTrue(shadowOf(resumed).isLastForegroundNotificationAttached)
+        } finally {
+            shutdown(resumed, app)
+        }
+    }
+
+    @Test
+    fun pausedTickerDoesNotRepostTheShadeCard() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        app.store.selectTimer(TimerMode.MIN_15)
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            val paused = shade(service)
+            val text = paused.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
+            assertTrue(text.startsWith("Paused"))
+
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+
+            val again = shade(service)
+            assertEquals(paused.postTime, again.postTime)
+            assertEquals(text, again.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+            assertEquals(0, again.notification.flags and Notification.FLAG_ONGOING_EVENT)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun pausedTickerDoesNotRestoreACardTheSystemRemoved() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        app.store.selectTimer(TimerMode.MIN_15)
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            assertNotNull(postedOrNull(service))
+            // The system drops the card as the swipe finishes. ACTION_DISMISS
+            // arrives later, so postingShade is still set while the ticker runs.
+            service.getSystemService(NotificationManager::class.java)
+                .cancel(NoisePlaybackService.NOTIFICATION_ID)
+            assertNull(postedOrNull(service))
+
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+
+            assertNull(postedOrNull(service))
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun playingTickerPostsTheLatestStatus() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val intent = Intent(app, NoisePlaybackService::class.java)
+            .setAction(NoisePlaybackService.ACTION_PLAY)
+        val service = Robolectric.buildService(NoisePlaybackService::class.java, intent)
+            .create()
+            .get()
+        // A dead AudioTrack posts playback-ended onto the main looper. Leave that
+        // callback as a no-op so idling the ticker cannot clear the shade card.
+        silenceEngineEnd(service)
+        service.onStartCommand(intent, 0, 1)
+        try {
+            val before = shade(service)
+            assertEquals(
+                "Brown Noise",
+                before.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+
+            app.store.selectSound(NoiseColor.PINK)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+
+            val after = shade(service)
+            assertTrue(after.postTime > before.postTime)
+            assertEquals(
+                "Pink Noise",
+                after.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+            assertTrue(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun transientFocusLossKeepsTheForegroundServiceAndResumes() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            audioFocus(service, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+            val paused = posted(service)
+            assertTrue(paused.flags and Notification.FLAG_ONGOING_EVENT != 0)
+            assertNull(paused.deleteIntent)
+
+            audioFocus(service, AudioManager.AUDIOFOCUS_GAIN)
+
+            assertTrue(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(posted(service).flags and Notification.FLAG_ONGOING_EVENT != 0)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun permanentFocusLossReleasesTheForegroundService() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            audioFocus(service, AudioManager.AUDIOFOCUS_LOSS)
+
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            val paused = posted(service)
+            assertEquals(0, paused.flags and Notification.FLAG_ONGOING_EVENT)
+            assertNotNull(paused.deleteIntent)
+
+            audioFocus(service, AudioManager.AUDIOFOCUS_GAIN)
+
+            assertFalse(app.store.state.value.isPlaying)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    @Config(sdk = [31])
+    fun resumeAfterTransientLossSurvivesBackgroundForegroundRestriction() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            audioFocus(service, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+            assertFalse(app.store.state.value.isPlaying)
+            shadowOf(service).setThrowInStartForeground(
+                ForegroundServiceStartNotAllowedException("background"),
+            )
+            audioFocus(service, AudioManager.AUDIOFOCUS_GAIN)
+            assertTrue(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+            assertFalse(shadowOf(service).isStoppedBySelf)
+            assertNotNull(postedOrNull(service))
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun missingForegroundPermissionStillStopsPlayback() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            shadowOf(service).setThrowInStartForeground(SecurityException("denied"))
+            deliver(service, NoisePlaybackService.ACTION_SYNC)
+            assertFalse(app.store.state.value.isPlaying)
+            assertFalse(app.store.state.value.isPaused)
+            assertTrue(shadowOf(service).isStoppedBySelf)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun otherForegroundFailuresStillPropagate() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            audioFocus(service, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+            shadowOf(service).setThrowInStartForeground(IllegalStateException("notification missing"))
+            try {
+                audioFocus(service, AudioManager.AUDIOFOCUS_GAIN)
+                fail("unrelated foreground failure should propagate")
+            } catch (thrown: InvocationTargetException) {
+                assertEquals("notification missing", thrown.cause?.message)
+            }
+            assertTrue(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    private fun start(app: ShushApp, action: String): NoisePlaybackService {
+        val intent = Intent(app, NoisePlaybackService::class.java).setAction(action)
+        val service = Robolectric.buildService(NoisePlaybackService::class.java, intent)
+            .create()
+            .get()
+        // Skip ServiceController.startCommand so its looper idle cannot run the
+        // audio thread's ended callback before the test reads the notification.
+        service.onStartCommand(intent, 0, 1)
+        return service
+    }
+
+    private fun deliver(service: NoisePlaybackService, action: String) {
+        service.onStartCommand(Intent(service, NoisePlaybackService::class.java).setAction(action), 0, 2)
+    }
+
+    private fun audioFocus(service: NoisePlaybackService, change: Int) {
+        val method = NoisePlaybackService::class.java.getDeclaredMethod(
+            "onAudioFocus",
+            Int::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        method.invoke(service, change)
+    }
+
+    private fun shade(service: NoisePlaybackService): StatusBarNotification =
+        service.getSystemService(NotificationManager::class.java)
+            .activeNotifications
+            .first { it.id == NoisePlaybackService.NOTIFICATION_ID }
+
+    private fun posted(service: NoisePlaybackService): Notification =
+        requireNotNull(postedOrNull(service))
+
+    private fun postedOrNull(service: NoisePlaybackService): Notification? =
+        service.getSystemService(NotificationManager::class.java)
+            .activeNotifications
+            .firstOrNull { it.id == NoisePlaybackService.NOTIFICATION_ID }
+            ?.notification
+
+    private fun shutdown(service: NoisePlaybackService, app: ShushApp) {
+        if (!shadowOf(service).isStoppedBySelf) service.onDestroy()
+        app.store.stop()
+        // The audio thread posts the ended callback here. Drain it while playback
+        // is already stopped so it cannot clear the next test's notification.
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun silenceEngineEnd(service: NoisePlaybackService) {
+        val delegate = NoisePlaybackService::class.java.getDeclaredField("engine\$delegate")
+        delegate.isAccessible = true
+        val engine = (delegate.get(service) as Lazy<*>).value as NoiseEngine
+        val onEnded = NoiseEngine::class.java.getDeclaredField("onEnded")
+        onEnded.isAccessible = true
+        onEnded.set(engine, {})
     }
 
     private fun engineEnded(service: NoisePlaybackService): () -> Unit {
