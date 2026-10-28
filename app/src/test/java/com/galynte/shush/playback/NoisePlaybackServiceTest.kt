@@ -22,6 +22,7 @@ import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -210,6 +211,78 @@ class NoisePlaybackServiceTest {
             assertTrue(shadowOf(resumed).isLastForegroundNotificationAttached)
         } finally {
             shutdown(resumed, app)
+        }
+    }
+
+    @Test
+    fun pauseAfterTheCardIsPostedStillCallsStartForeground() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            assertTrue(shadowOf(service).isLastForegroundNotificationAttached)
+
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+
+            // The pause arrives through startForegroundService after the playing
+            // card already exists. The promotion has to happen again, and the
+            // card that stays in the shade is still the dismissible one.
+            val promoted = shadowOf(service).lastForegroundNotification
+            assertTrue(
+                promoted.extras.getCharSequence(Notification.EXTRA_TEXT)
+                    .toString()
+                    .startsWith("Paused"),
+            )
+            assertTrue(promoted.flags and Notification.FLAG_ONGOING_EVENT != 0)
+            val shown = posted(service)
+            assertEquals(0, shown.flags and Notification.FLAG_ONGOING_EVENT)
+            assertEquals(0, shown.flags and Notification.FLAG_FOREGROUND_SERVICE)
+            assertNotNull(shown.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(shadowOf(service).isStoppedBySelf)
+        } finally {
+            shutdown(service, app)
+        }
+    }
+
+    @Test
+    fun pausedUpdateAfterTheCardIsPostedStillCallsStartForeground() {
+        val app = ApplicationProvider.getApplicationContext<ShushApp>()
+        val service = start(app, NoisePlaybackService.ACTION_PLAY)
+        try {
+            deliver(service, NoisePlaybackService.ACTION_PAUSE)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            val paused = shadowOf(service).lastForegroundNotification
+            assertEquals(
+                "Paused",
+                paused.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+
+            // Same path as changing the timer while paused: the activity calls
+            // startForegroundService, and the service is no longer foreground.
+            app.store.selectTimer(TimerMode.MIN_15)
+            deliver(service, NoisePlaybackService.ACTION_SYNC)
+
+            val promoted = shadowOf(service).lastForegroundNotification
+            assertNotSame(paused, promoted)
+            assertEquals(
+                "Paused · 15:00 left",
+                promoted.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+            assertTrue(promoted.flags and Notification.FLAG_ONGOING_EVENT != 0)
+            val shown = posted(service)
+            assertEquals(
+                "Paused · 15:00 left",
+                shown.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
+            assertEquals(0, shown.flags and Notification.FLAG_ONGOING_EVENT)
+            assertEquals(0, shown.flags and Notification.FLAG_FOREGROUND_SERVICE)
+            assertNotNull(shown.deleteIntent)
+            assertFalse(shadowOf(service).isLastForegroundNotificationAttached)
+            assertTrue(app.store.state.value.isPaused)
+            assertFalse(app.store.state.value.isPlaying)
+        } finally {
+            shutdown(service, app)
         }
     }
 

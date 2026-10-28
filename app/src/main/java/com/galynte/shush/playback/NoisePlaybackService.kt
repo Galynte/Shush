@@ -132,7 +132,9 @@ class NoisePlaybackService : android.app.Service() {
             null -> store.restoreSession()
             ACTION_SYNC -> Unit
         }
-        return render()
+        // The activity starts this service in the foreground for play, pause, and
+        // every later update while paused. That start has to reach startForeground.
+        return render(fromStart = true)
     }
 
     override fun onBind(intent: Intent?) = null
@@ -152,7 +154,7 @@ class NoisePlaybackService : android.app.Service() {
         super.onDestroy()
     }
 
-    private fun render(): Int {
+    private fun render(fromStart: Boolean = false): Int {
         if (shadeDismissed) {
             clearShade()
             stopSelf()
@@ -177,10 +179,14 @@ class NoisePlaybackService : android.app.Service() {
         // Android 12+ throws ForegroundServiceStartNotAllowedException.
         val stayForeground = shouldHoldForeground(state)
         try {
-            if (stayForeground || !mediaShown) {
-                // startForegroundService has to reach startForeground even when the
-                // sound is only paused. The foreground card must stay ongoing for
-                // that call; the dismissible card replaces it once the call returns.
+            // startForegroundService has to reach startForeground even when the
+            // sound is only paused. A card that is already posted is not that
+            // call: pause has left the foreground, so the next paused start
+            // times out unless this one promotes again. The ongoing card lasts
+            // only for that call; the dismissible card replaces it afterward.
+            // An in-process update, such as a focus loss, is not one of those
+            // starts and must not promote on its own.
+            if (stayForeground || fromStart || !mediaShown) {
                 ServiceCompat.startForeground(
                     this,
                     NOTIFICATION_ID,
