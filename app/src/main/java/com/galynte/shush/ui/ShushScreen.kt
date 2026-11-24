@@ -174,7 +174,11 @@ fun ShushScreen(
 @Composable
 private fun Header(onOpenAbout: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        HeaderIcon()
+        LauncherMark(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(8.dp)),
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -215,7 +219,10 @@ private fun Header(onOpenAbout: () -> Unit) {
 }
 
 @Composable
-private fun HeaderIcon() {
+internal fun LauncherMark(
+    modifier: Modifier = Modifier,
+    contentDescription: String? = "Shush",
+) {
     val context = LocalContext.current
     val image = remember {
         val drawable = requireNotNull(ContextCompat.getDrawable(context, R.mipmap.ic_launcher))
@@ -223,10 +230,8 @@ private fun HeaderIcon() {
     }
     Image(
         bitmap = image,
-        contentDescription = "Shush",
-        modifier = Modifier
-            .size(32.dp)
-            .clip(RoundedCornerShape(8.dp)),
+        contentDescription = contentDescription,
+        modifier = modifier,
     )
 }
 

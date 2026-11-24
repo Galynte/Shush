@@ -12,7 +12,9 @@ Minimum Android version is 8.0 (API 26). The application id is `com.galynte.shus
 
 ## Get the app
 
-Install a debug build from source, or take the APK from a [GitHub release](https://github.com/Galynte/Shush/releases) once a version is tagged. Play Store hosting uses the AAB from that same release. See [PUBLISHING.md](PUBLISHING.md).
+[![Get it on Google Play](docs/assets/images/playstore_badge.png)](https://play.google.com/store/apps/details?id=com.galynte.shush) [![Get it on GitHub](docs/assets/images/github_badge.png)](https://github.com/Galynte/Shush/releases)
+
+Install a debug build from source, or take the APK from a [GitHub release](https://github.com/Galynte/Shush/releases). Play Store hosting uses the AAB from that same release. See [PUBLISHING.md](PUBLISHING.md).
 
 ## Screenshots
 
@@ -36,7 +38,7 @@ Install a debug build from source, or take the APK from a [GitHub release](https
 
 The name is Shush. The line under it is "A hush for the night."
 
-The mark is a crescent with three short bars in the opening, a sound getting quieter rather than a siren. It is drawn the same way in the app, the launcher, and the Play graphic. Source for the bitmap sizes is `tools/render_brand.py`. An SVG sits at `docs/assets/brand/shush-mark.svg`.
+The mark is a crescent with three short bars in the opening, a sound getting quieter rather than a siren. The home header and the About page show the launcher icon, which matches `docs/assets/brand/mark.png`. Source for the bitmap sizes is `tools/render_brand.py`.
 
 | Role | Hex |
 | --- | --- |

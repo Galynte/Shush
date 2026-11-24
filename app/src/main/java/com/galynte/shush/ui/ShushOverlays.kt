@@ -30,8 +30,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.galynte.shush.playback.FADE_MS
@@ -142,15 +148,12 @@ fun AboutOverlay(versionName: String, onDismiss: () -> Unit) {
                 .padding(horizontal = 24.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Box(
+            LauncherMark(
                 modifier = Modifier
                     .size(84.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Night),
-                contentAlignment = Alignment.Center,
-            ) {
-                ShushMark(Modifier.fillMaxSize())
-            }
+                    .clip(RoundedCornerShape(24.dp)),
+                contentDescription = null,
+            )
             Spacer(Modifier.height(16.dp))
             Text(
                 text = "Shush",
@@ -183,6 +186,25 @@ fun AboutOverlay(versionName: String, onDismiss: () -> Unit) {
             Text(
                 text = "$versionName  ·  Apache License 2.0",
                 color = TextMuted,
+                fontSize = 13.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = buildAnnotatedString {
+                    withLink(
+                        LinkAnnotation.Url(
+                            SOURCE_URL,
+                            TextLinkStyles(
+                                style = SpanStyle(
+                                    color = Lavender,
+                                    textDecoration = TextDecoration.Underline,
+                                ),
+                            ),
+                        ),
+                    ) {
+                        append("Source code")
+                    }
+                },
                 fontSize = 13.sp,
             )
             Spacer(Modifier.height(18.dp))
@@ -293,6 +315,8 @@ private fun OverlayButton(
         Text(text = label, color = foreground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
+private const val SOURCE_URL = "https://github.com/Galynte/Shush"
 
 private fun Modifier.consumeClicks(): Modifier = pointerInput(Unit) {
     awaitEachGesture {
